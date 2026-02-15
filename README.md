@@ -1,199 +1,154 @@
-# 🧩 Atomikos Batch Demo – Distributed JTA Transactions with MySQL & PostgreSQL
+# Atomikos Batch Demo
 
-This project demonstrates how to configure **Spring Boot 3.5.4** with **Atomikos 6.0.0**
-to perform **distributed JTA transactions** across two databases (**MySQL** and **PostgreSQL**)
-with **batched inserts** for maximum performance.
+Distributed JTA/XA transaction demo using Spring Boot, Atomikos, MySQL, and PostgreSQL, with focus on batched inserts.
 
----
+## Current Status (February 15, 2026)
 
-## ⚙️ Tech Stack
+This repository is currently a **working technical demo** for:
 
-| Component | Version | Description |
-|------------|----------|-------------|
-| **Java** | 21 | JDK for modern Spring Boot |
-| **Spring Boot** | 3.5.4 | Application framework |
-| **Atomikos** | 6.0.0 | JTA transaction manager for multi-DB XA coordination |
-| **MySQL JDBC Driver** | 9.3.0 | JDBC connector for MySQL |
-| **PostgreSQL JDBC Driver** | 42.7.7 | JDBC connector for PostgreSQL |
-| **Docker** | latest | Containerized MySQL & PostgreSQL databases |
+- XA transaction coordination across MySQL and PostgreSQL via Atomikos.
+- Batch saving data to both databases in one global transaction.
+- Comparing XA batch inserts with a non-XA MySQL-only insert path.
 
----
+It is **not production-ready yet**. Main gaps right now:
 
-## 🧱 Project Overview
+- Test coverage is not implemented yet (current test run executes 0 tests).
+- Dev credentials and verbose SQL logging are enabled in `application.properties`.
+- Schema management uses `hibernate.hbm2ddl.auto=update` (demo convenience).
 
-The application inserts dummy employee records into both **MySQL** and **PostgreSQL** within a single JTA transaction.
+## What This Project Demonstrates
 
-If either insert fails, **Atomikos** ensures both databases are rolled back, maintaining global consistency.
+1. Spring Boot multi-datasource configuration with Atomikos JTA transaction manager.
+2. Single service method writing to MySQL and PostgreSQL inside one XA transaction.
+3. Batch-oriented inserts (Hibernate/JDBC batch settings + MySQL batched statement rewrite).
+4. Optional non-XA insert flow for local comparison.
 
-**Core packages:**
-```
-com.example.batch
- ┣ config/        → Atomikos, DataSource & EntityManager configs
- ┣ entity/        → MySQLEmployee, PostgresEmployee JPA entities
- ┣ repo/          → Spring Data JPA repositories
- ┣ service/       → DummyDataGeneratorService + Impl
- ┣ utils/         → DummyDataGeneratorUtil (generates random employees)
-```
+## Tech Stack
 
----
+- Java 21
+- Spring Boot 3.5.4
+- Atomikos 6.0.0
+- MySQL Connector/J 9.3.0
+- PostgreSQL JDBC 42.7.7
+- Docker Compose (local databases)
 
-## 🐳 Docker Compose Setup
+## Architecture (High Level)
 
-```yaml
-services:
-  postgres:
-    image: postgres:17
-    container_name: local-postgres
-    restart: always
-    environment:
-      POSTGRES_USER: user
-      POSTGRES_PASSWORD: password
-      POSTGRES_DB: postgres_db
-    ports:
-      - "5433:5432"
-    volumes:
-      - pg_data:/var/lib/postgresql/data
-    command: >
-      postgres -c max_prepared_transactions=100
+- `config/`
+  - Atomikos transaction manager setup.
+  - XA datasource + entity manager per database.
+  - Separate non-XA MySQL datasource/transaction manager.
+- `entity/`
+  - `MySQLEmployee` mapped to `employee_mysql`.
+  - `PostgresEmployee` mapped to `employee_pg`.
+- `repo/`
+  - Spring Data repositories for MySQL XA, MySQL non-XA, and PostgreSQL XA.
+- `service/`
+  - XA batch generation and save service.
+  - Non-XA batch insert service.
 
-  mysql:
-    image: mysql
-    container_name: local-mysql
-    restart: always
-    environment:
-      MYSQL_ROOT_PASSWORD: password
-      MYSQL_DATABASE: mysql_db
-      MYSQL_USER: user
-      MYSQL_PASSWORD: password
-    ports:
-      - "3307:3306"
-    volumes:
-      - mysql_data:/var/lib/mysql
+## XA Batch Save Flow
 
-volumes:
-  pg_data:
-  mysql_data:
+The main XA flow is in:
+
+- `src/main/java/com/example/batch/service/DummyDataGeneratorServiceImpl.java`
+
+Method:
+
+- `generateAndSaveDummyData(int count)`
+
+Behavior:
+
+1. Generate dummy rows for MySQL + PostgreSQL.
+2. Save both lists in a method annotated with `@Transactional("transactionManager")`.
+3. Atomikos coordinates the global transaction across both resource managers.
+
+If one branch fails, XA should roll back the global transaction and keep both databases consistent.
+
+## Local Setup
+
+### 1. Start databases
+
+```bash
+docker compose up -d
 ```
 
-✅ PostgreSQL must enable `max_prepared_transactions`, which is **required for XA**.
+PostgreSQL already starts with:
 
----
+- `max_prepared_transactions=100`
 
-## 🧩 XA Permissions (MySQL)
+which is required for XA.
 
-Atomikos requires the MySQL user to have `XA_RECOVER_ADMIN` privileges for XA recovery.
-
-Run inside the MySQL container:
+### 2. Grant MySQL XA recovery privilege
 
 ```bash
 docker exec -it local-mysql mysql -u root -p
 ```
 
-Then execute:
+Then run:
 
 ```sql
 GRANT XA_RECOVER_ADMIN ON *.* TO 'user'@'%';
 FLUSH PRIVILEGES;
 ```
 
----
+### 3. Run the application
 
-## ⚙️ Application Properties
-
-### `application.properties`
-```properties
-# ============= POSTGRES (Atomikos XA DataSource) =============
-postgres.datasource.unique-resource-name=postgresDataSource
-postgres.datasource.xa-data-source-classname=org.postgresql.xa.PGXADataSource
-postgres.datasource.xa-properties.user=user
-postgres.datasource.xa-properties.password=password
-postgres.datasource.xa-properties.databaseName=postgres_db
-postgres.datasource.xa-properties.serverName=localhost
-postgres.datasource.xa-properties.portNumber=5433
-postgres.datasource.max-pool-size=10
-postgres.datasource.min-pool-size=2
-
-# ============= MYSQL (Atomikos XA DataSource) =============
-mysql.datasource.unique-resource-name=mysqlDataSource
-mysql.datasource.xa-data-source-class-name=com.mysql.cj.jdbc.MysqlXADataSource
-mysql.datasource.xa-properties.user=user
-mysql.datasource.xa-properties.password=password
-# IMPORTANT: Enables true batch rewriting for performance
-mysql.datasource.xa-properties.url=jdbc:mysql://localhost:3307/mysql_db?rewriteBatchedStatements=true
-mysql.datasource.max-pool-size=10
-mysql.datasource.min-pool-size=2
-```
-
----
-
-## ⚙️ Transaction Manager Configuration
-
-```java
-@Configuration
-@EnableTransactionManagement
-public class TransactionManagerConfig {
-
-    @Bean(initMethod = "init", destroyMethod = "close")
-    public UserTransactionManager atomikosTransactionManager() throws SystemException {
-        UserTransactionManager txManager = new UserTransactionManager();
-        txManager.setForceShutdown(false);
-        txManager.setTransactionTimeout(300);
-        return txManager;
-    }
-
-    @Bean
-    public UserTransaction atomikosUserTransaction() throws SystemException {
-        UserTransactionImp userTx = new UserTransactionImp();
-        userTx.setTransactionTimeout(300);
-        return userTx;
-    }
-
-    @Bean
-    @Primary
-    public JtaTransactionManager transactionManager() throws SystemException {
-        return new JtaTransactionManager(atomikosUserTransaction(), atomikosTransactionManager());
-    }
-}
-```
-
----
-
-## 🧠 Notes on Batch Performance
-
-- PostgreSQL supports JDBC batching natively.
-- MySQL requires `rewriteBatchedStatements=true` in the JDBC URL.
-- Recommended `hibernate.jdbc.batch_size = 20–50` for best trade-off.
-- Atomikos adds a small overhead for XA, but guarantees atomicity across DBs.
-
-Typical Hibernate statistics log after optimization:
-```
-executing 200 JDBC batches
-executing 0 JDBC statements
-```
-
----
-
-## 🧪 Testing the Application
-
-Once both databases are up:
+If needed once:
 
 ```bash
-mvn spring-boot:run
+chmod +x mvnw
 ```
 
-Then call the endpoint that triggers dummy data generation (if exposed), or run a test that calls:
-```java
-dummyDataGeneratorService.generateAndSaveDummyData(1000);
-```
+Then:
 
-Check both databases via Docker:
 ```bash
-docker exec -it local-postgres psql -U user -d postgres_db -c "SELECT COUNT(*) FROM employee_postgres;"
-docker exec -it local-mysql mysql -u user -p -D mysql_db -e "SELECT COUNT(*) FROM employee_mysql;"
+./mvnw spring-boot:run
 ```
 
----
+App default port:
 
-## 🧾 License
+- `http://localhost:8888`
 
-This demo is for educational and research purposes. You may reuse or adapt freely.
+## Main API Endpoints
+
+### XA batch insert (MySQL + PostgreSQL)
+
+```bash
+curl -X POST "http://localhost:8888/api/test/generate?count=25000"
+```
+
+### Non-XA batch insert (MySQL only)
+
+```bash
+curl -X POST "http://localhost:8888/api/non-xa/generate?count=50000&flushingBatchSize=10000&hibernateJdbcBatchSize=50"
+```
+
+## Verify Data Was Saved
+
+PostgreSQL:
+
+```bash
+docker exec -it local-postgres psql -U user -d postgres_db -c "SELECT COUNT(*) FROM employee_pg;"
+```
+
+MySQL:
+
+```bash
+docker exec -it local-mysql mysql -u user -ppassword -D mysql_db -e "SELECT COUNT(*) FROM employee_mysql;"
+```
+
+## Optional Experimental Parts
+
+Pagination and benchmark endpoints exist in the project for experimentation, but they are secondary to the primary XA + batch-save goal.
+
+## Known Limitations
+
+- No automated integration tests proving XA commit/rollback behavior yet.
+- Error handling and API response models are minimal.
+- Hardcoded local credentials and permissive CORS in demo configuration.
+- Batch/sizing values are fixed for demo simplicity.
+
+## License
+
+MIT. See `LICENSE`.
